@@ -1,0 +1,17 @@
+- **Query:** aggie e. nagle, l.c.s.w. | 11900 54th avenue, plymouth, mn | us
+  - **True Match:** aggie e. nagle,  l.c.s.w. inc. | ##11900 54nd ave, minneaplis, mn | us
+  - **True Match:** aggieenagle.com | 11900 54rd ave, plymouth, minnesota | us
+  - **True Match:** *** aggieenagle.com | 54nd avenue, minneaplis, mn | us
+  - **True Match:** aggie e. nágle, l.c.s.w. | ##11900 54nd ave, minneaplis, mn | us
+  - **True Match:** aggie e. nlmgl, (l.c.s.w.) | 54nd avenue, minneaplis, mn | us
+- **Query:** angad multitrade ltd | building no. 37/4, first floor opp bharata mata college, vazhakkala, thrikkakara, ernakulam, kerala | india
+  - **True Match:** angad  multitrade ltd. | കേരളം, no. 439 building no. 37/4, first floor opp bharata mata college, vazhakkala, thrikkakara | india
+  - **True Match:** angad multitrade ltd | none | india
+  - **True Match:** angad multitrade limited | no. 439 building no. 37/4, first floor opp bharata mata college, vazhakkala, thrikkakara, കേരളം | india
+- **Query:** morgan ameren inc | la, 266 enterprise drive, houma | us
+  - **True Match:** inc morgan aembern | 266 enterprise dr, bayou cane, la | us
+  - **True Match:** @morganameren | bayou cane, louisiana, 267 enterprise drive | us
+  - **True Match:** morgan ameren-inc | 267 enterprise dr, bayou cane, louisiana | us
+  - **True Match:** morgan ameren inc | louisiana, 267 enterprise drive, bayou cane | us
+  - **True Match:** morgan ameren  inc | none | us
+  - **True Match:** morgan ámeren inc | 267 enterprise drive, houma, louisiana | us

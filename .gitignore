@@ -1,0 +1,39 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+.agents/
+*.sublime-project
+*.sublime-workspace
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Logs and runtime artifacts
+*.log
+submissions/*.log
+submissions/run.log
+
+# Raw large dataset TSV files
+data/raw/
+*.tsv
+
+# Scratch and temporary folders
+cache/
+output/
