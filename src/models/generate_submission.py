@@ -32,8 +32,10 @@ import sys
 import time
 import pickle
 import logging
+import gc
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 from pathlib import Path
 from tqdm import tqdm
 from tqdm.auto import tqdm as tqdm_auto
@@ -108,28 +110,108 @@ def clean_text(df):
     return name + " | " + address + " | " + country
 
 
+def build_tfidf_matrices(corpus_texts, s1_texts, cache_dir,
+                          sample_size=300_000, batch_size=250_000):
+    """
+    Streaming TF-IDF builder (Rules 2, 7).
+    1. Fits vocabulary on 300k representative sample (avoids 10M-doc MemoryError).
+    2. Transforms corpus and S1 in chunks of 250k with tqdm progress bars.
+    3. Caches resulting CSR matrices to disk so restarts take ~3s.
+    """
+    corpus_cache = cache_dir / "test_corpus_tfidf_matrix.npz"
+    s1_cache     = cache_dir / "test_s1_tfidf_matrix.npz"
+
+    if corpus_cache.exists() and s1_cache.exists():
+        log.info(f"Loading cached TF-IDF sparse matrices from {cache_dir} ...")
+        corpus_matrix = sp.load_npz(corpus_cache)
+        s1_matrix     = sp.load_npz(s1_cache)
+        log.info(f"Loaded: Corpus {corpus_matrix.shape}  |  S1 {s1_matrix.shape}")
+        return s1_matrix, corpus_matrix
+
+    log.info(f"Fitting TF-IDF vectoriser on {sample_size:,} sample texts ...")
+    t0 = time.time()
+    vectorizer = TfidfVectorizer(
+        ngram_range=TFIDF_NGRAM,
+        analyzer="char_wb",
+        max_features=TFIDF_MAX_FEAT,
+        dtype=np.float32,
+        sublinear_tf=True,
+    )
+    # Balanced representative sample across S1 and Corpus
+    sample_texts = s1_texts[:sample_size // 2] + corpus_texts[:sample_size // 2]
+    vectorizer.fit(sample_texts)
+    log.info(f"Vocabulary fitted in {time.time()-t0:.1f}s (vocab: {len(vectorizer.vocabulary_):,} features)")
+
+    # Transform corpus in chunks
+    log.info(f"Transforming corpus ({len(corpus_texts):,} texts) in batches of {batch_size:,} ...")
+    t0 = time.time()
+    corpus_chunks = []
+    n_corpus = len(corpus_texts)
+    with tqdm(total=n_corpus, desc="[STEP 3a] Transform Corpus",
+              unit="doc", dynamic_ncols=True, colour="cyan") as pbar:
+        for i in range(0, n_corpus, batch_size):
+            chunk = corpus_texts[i:min(i + batch_size, n_corpus)]
+            corpus_chunks.append(vectorizer.transform(chunk))
+            pbar.update(len(chunk))
+    corpus_matrix = sp.vstack(corpus_chunks, format="csr")
+    del corpus_chunks
+    gc.collect()
+    log.info(f"Corpus matrix ready: {corpus_matrix.shape}  [{time.time()-t0:.1f}s]")
+
+    # Transform S1 queries in chunks
+    log.info(f"Transforming S1 queries ({len(s1_texts):,} texts) in batches of {batch_size:,} ...")
+    t0 = time.time()
+    s1_chunks = []
+    n_s1 = len(s1_texts)
+    with tqdm(total=n_s1, desc="[STEP 3b] Transform S1",
+              unit="query", dynamic_ncols=True, colour="blue") as pbar:
+        for i in range(0, n_s1, batch_size):
+            chunk = s1_texts[i:min(i + batch_size, n_s1)]
+            s1_chunks.append(vectorizer.transform(chunk))
+            pbar.update(len(chunk))
+    s1_matrix = sp.vstack(s1_chunks, format="csr")
+    del s1_chunks
+    gc.collect()
+    log.info(f"S1 matrix ready: {s1_matrix.shape}  [{time.time()-t0:.1f}s]")
+
+    # Cache matrices to disk (Rule 2)
+    log.info(f"Caching TF-IDF matrices to {cache_dir} ...")
+    sp.save_npz(corpus_cache, corpus_matrix)
+    sp.save_npz(s1_cache, s1_matrix)
+    log.info("TF-IDF matrices successfully cached to disk.")
+
+    return s1_matrix, corpus_matrix
+
+
 def run_tfidf_stage(s1_matrix, corpus_matrix, s1_ids, corpus_ids, threshold, chunk_size):
     """
     Chunked sparse TF-IDF candidate generation (Rule 7).
-    Avoids materialising the full S1 x corpus dense similarity matrix.
+    Direct CSR array slicing without instantiating getrow() matrix objects.
     Returns {s1_id: [candidate_corpus_id, ...]}
     """
     candidate_lists = {}
     n_queries = s1_matrix.shape[0]
-    n_chunks   = (n_queries + chunk_size - 1) // chunk_size
     total_cands = 0
 
-    with tqdm(total=n_queries, desc="[STEP 3] TF-IDF candidates",
-              unit="query", dynamic_ncols=True, colour="cyan") as pbar:
+    with tqdm(total=n_queries, desc="[STEP 3c] TF-IDF candidates",
+              unit="query", dynamic_ncols=True, colour="yellow") as pbar:
         for start in range(0, n_queries, chunk_size):
             end = min(start + chunk_size, n_queries)
             chunk_sims = s1_matrix[start:end].dot(corpus_matrix.T)   # sparse x sparse
 
+            indptr  = chunk_sims.indptr
+            indices = chunk_sims.indices
+            data    = chunk_sims.data
+
             chunk_cands = 0
             for local_i, global_i in enumerate(range(start, end)):
-                row = chunk_sims.getrow(local_i)
-                mask = row.data > threshold
-                valid_idx = row.indices[mask]
+                r_start = indptr[local_i]
+                r_end   = indptr[local_i + 1]
+                row_data    = data[r_start:r_end]
+                row_indices = indices[r_start:r_end]
+
+                mask = row_data > threshold
+                valid_idx = row_indices[mask]
                 candidate_lists[s1_ids[global_i]] = corpus_ids[valid_idx].tolist()
                 chunk_cands += len(valid_idx)
 
@@ -356,22 +438,11 @@ def main():
     log.info(sep)
     log.info(f"STEP 3 - TF-IDF Candidate Generation (threshold > {TFIDF_THRESHOLD}) ...")
     log.info(sep)
-    log.info("  Fitting TF-IDF vectoriser on corpus ...")
-    t0 = time.time()
-    vectorizer = TfidfVectorizer(
-        ngram_range=TFIDF_NGRAM,
-        analyzer="char_wb",
-        max_features=TFIDF_MAX_FEAT,
-        dtype=np.float32,
-        sublinear_tf=True,
+    s1_texts = s1["text"].tolist()
+    s1_matrix, corpus_matrix = build_tfidf_matrices(
+        corpus_texts, s1_texts, CACHE_DIR,
+        sample_size=300_000, batch_size=250_000,
     )
-    corpus_matrix = vectorizer.fit_transform(corpus_texts)
-    log.info(f"  Corpus matrix : {corpus_matrix.shape}  [{time.time()-t0:.1f}s]")
-
-    log.info("  Transforming S1 queries ...")
-    t0 = time.time()
-    s1_matrix = vectorizer.transform(s1["text"].tolist())
-    log.info(f"  S1 matrix     : {s1_matrix.shape}  [{time.time()-t0:.1f}s]")
 
     candidate_lists = run_tfidf_stage(
         s1_matrix, corpus_matrix, s1_ids, corpus_ids,
