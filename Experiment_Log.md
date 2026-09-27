@@ -57,6 +57,20 @@ This document chronicles the step-by-step experimentation, failures, and breakth
 
 ---
 
+## Phase 5: Engineering Governance (`RULES.md`)
+*(Strict Framework that prevented Catastrophic Failures)*
+
+**Objective:** Prevent out-of-memory errors and 12-hour timeouts.  
+To handle the scale of 5 Million records, our team established and strictly adhered to a `RULES.md` framework governing all coding practices:
+1. **No Full-Dataset Prototyping:** All architectural experiments were restricted to a 1,000-sample validation split until pipeline integrity was proven.
+2. **Aggressive Caching:** Implemented strict cache-check guards (`if exists: load()`) for intermediate Parquet features, saving hundreds of hours of recomputation.
+3. **Optimized Formats:** Completely banned `.csv` files for intermediate data, enforcing memory-mapped `.parquet` and sparse `.npz` structures to fit everything inside Kaggle's 30GB constraint.
+4. **Environment Consistency:** Standardized dependencies across local development and Kaggle via strict `requirements.txt` tracking.
+
+This governance document was the sole reason we avoided the typical "runs locally but crashes on Kaggle" pitfall.
+
+---
+
 ## Conclusion: The Ultimate Architecture (Report 09)
 By merging our findings, we finalized our pipeline:
 1. **Blocking:** `max_df=0.15` TF-IDF with GPU/Cython dot-product chunking.
