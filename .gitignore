@@ -6,6 +6,9 @@ __pycache__/
 
 # Environments
 .env
+.env.aws
+.env.aws.*
+*.pem
 .venv/
 venv/
 env/
@@ -37,3 +40,9 @@ data/raw/
 # Scratch and temporary folders
 cache/
 output/
+data/processed/
+data/interim/
+*.parquet
+*.npz
+*.joblib
+kaggle_working/
