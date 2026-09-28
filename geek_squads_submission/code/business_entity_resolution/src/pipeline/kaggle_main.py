@@ -270,10 +270,10 @@ def process_data_in_chunks(s1, corpus, gt_dict, vec_hvt, out_dir, mode="train"):
     logger.info(f"    -> Query vectorization took {time.time() - t_start:.2f}s")
     
     n_queries = s1_hvt.shape[0]
-    chunk_size = 5000  # Safe for L4/T4 GPU VRAM
+    chunk_size = 4000 
     n_chunks = (n_queries + chunk_size - 1) // chunk_size
     threshold = 0.15 
-    top_k = 50       # Increased to 50 for max recall with High RAM
+    top_k = 30       # Increased to 30 to maximize recall since Engine is fast
     
     # 🚀 GPU ACCELERATION SETUP
     USE_GPU = False
@@ -428,13 +428,20 @@ def process_data_in_chunks(s1, corpus, gt_dict, vec_hvt, out_dir, mode="train"):
 #  MAIN EXECUTION
 # ─────────────────────────────────────────────────────────────
 def main():
-    logger.info("🚀 Starting Model Training Pipeline (Colab/Local Environment)!")
-    
-    # ── PATHS SETUP ──
-    base_dir = Path(__file__).resolve().parents[2]
-    train_norm_dir = base_dir / "data" / "processed" / "train_norm"
-    gt_dir = base_dir / "data" / "processed" / "train"
-    processed_dir = base_dir / "data" / "processed" / "pipeline_output"
+    # Auto-detect if running on Kaggle or Locally
+    is_kaggle = os.path.exists("/kaggle/input")
+    if is_kaggle:
+        logger.info("🌍 Detected Kaggle Environment!")
+        base_dir = Path("/kaggle/working")
+        train_norm_dir = Path("/kaggle/input/datasets/pavan9938/train-norm")
+        gt_dir = Path("/kaggle/input/datasets/pavan9938/train-norm") 
+        processed_dir = base_dir 
+    else:
+        logger.info("💻 Detected Local Environment!")
+        base_dir = Path(__file__).resolve().parents[2]
+        train_norm_dir = base_dir / "data" / "processed" / "train_norm"
+        gt_dir = base_dir / "data" / "processed" / "train"
+        processed_dir = base_dir / "data" / "processed" / "kaggle_pipeline"
         
     os.makedirs(processed_dir, exist_ok=True)
     train_chunk_dir = processed_dir / "train_chunks"
@@ -465,29 +472,44 @@ def main():
     else:
         # ── A. LOAD TRAIN DATA ──────────────────────────────────
         t_load = time.time()
-        
-        norm_cache_dir = processed_dir / "normalized_cache"
-        save_cache_dir = norm_cache_dir
+        if is_kaggle:
+            norm_cache_dir = Path("/kaggle/input/datasets/pavan9938/normalized-cache")
+            save_cache_dir = processed_dir / "normalized_cache"
+        else:
+            norm_cache_dir = processed_dir / "normalized_cache"
+            save_cache_dir = norm_cache_dir
             
         s1_cache_path = norm_cache_dir / "s1_train_norm.parquet"
         corpus_cache_path = norm_cache_dir / "corpus_train_norm.parquet"
         
         if s1_cache_path.exists() and corpus_cache_path.exists():
-            logger.info("✅ Found pre-normalized data! Loading directly from cache...")
+            logger.info("✅ Found pre-normalized data in Kaggle working cache! Loading directly...")
             s1_train = pd.read_parquet(s1_cache_path)
             corpus_train = pd.read_parquet(corpus_cache_path)
             logger.info(f"    -> Data loading completed in {time.time() - t_load:.2f}s")
         else:
             logger.info(f"Loading Train Data from {train_norm_dir}...")
             
-            s1_train = pd.read_parquet(train_norm_dir / "train_source1.parquet")
-            s2_train = pd.read_parquet(train_norm_dir / "train_source2.parquet")
-            s3_train = pd.read_parquet(train_norm_dir / "train_source3.parquet")
+            s1_full = pd.read_parquet(train_norm_dir / "train_source1.parquet")
+            s2_full = pd.read_parquet(train_norm_dir / "train_source2.parquet")
+            s3_full = pd.read_parquet(train_norm_dir / "train_source3.parquet")
+            
+            if not is_kaggle:
+                logger.info("  -> Downsampling corpus for local run...")
+                s1_train = s1_full.sample(n=10000, random_state=42).copy()
+                s2_train = s2_full.sample(n=400000, random_state=42).copy()
+                s3_train = s3_full.sample(n=400000, random_state=42).copy()
+            else:
+                s1_train = s1_full
+                s2_train = s2_full
+                s3_train = s3_full
                 
             corpus_train = pd.concat([s2_train, s3_train]).drop_duplicates(subset=['entity_id'])
             
-            # EXPLICIT RAM CLEANUP
+            # EXPLICIT RAM CLEANUP: Free the individual dataframes to prevent RAM doubling
             del s2_train, s3_train
+            if not is_kaggle:
+                del s1_full, s2_full, s3_full
             import gc; gc.collect()
             
             logger.info(f"    -> Data loading completed in {time.time() - t_load:.2f}s")
@@ -521,9 +543,14 @@ def main():
             'countries': s1_train['country'].astype(object).fillna('').values if 'country' in s1_train.columns else np.array([""] * len(s1_train))
         }
         
-        # USING FULL DATASET: A100 and 51GB RAM can handle all queries seamlessly
+        # Sample Training Queries to drastically cut processing time (100k is enough for LightGBM)
         n_train_q = len(s1_arrays['ids'])
-        logger.info(f"    -> Using FULL dataset ({n_train_q:,} queries) for maximum performance!")
+        if n_train_q > 100000:
+            logger.info(f"    -> Sampling 100,000 queries out of {n_train_q} to speed up Training (42 Hours -> 30 Mins)...")
+            np.random.seed(42)
+            sample_idx = np.random.choice(n_train_q, 100000, replace=False)
+            for k in s1_arrays:
+                s1_arrays[k] = s1_arrays[k][sample_idx]
                 
         corpus_arrays = {
             'ids': corpus_train['entity_id'].values.copy(),
@@ -535,15 +562,18 @@ def main():
         import gc; gc.collect()
         
         import joblib
-        vec_path = processed_dir / "vec_hvt.joblib"
+        if is_kaggle:
+            vec_path = Path("/kaggle/input/datasets/pavan9938/vectorizer/vec_hvt.joblib") # PLEASE UPDATE THIS KAGGLE PATH IF NEEDED
+        else:
+            vec_path = processed_dir / "vec_hvt.joblib"
             
         if vec_path.exists():
             logger.info(f"    -> ✅ Found pre-trained Vectorizer at {vec_path}! Loading it...")
             vec_hvt = joblib.load(vec_path)
             vec_hvt.is_pretrained = True
         else:
-            logger.info(f"    -> No pre-trained Vectorizer found. Initializing new TF-IDF setup (max_df=0.35)...")
-            vec_hvt = TfidfVectorizer(analyzer='word', ngram_range=(1,1), sublinear_tf=True, min_df=2, max_df=0.35)
+            logger.info(f"    -> No pre-trained Vectorizer found. Initializing new TF-IDF setup...")
+            vec_hvt = TfidfVectorizer(analyzer='word', ngram_range=(1,1), sublinear_tf=True, min_df=2, max_df=0.15)
             vec_hvt.is_pretrained = False
         
         # ── B. TRAIN CHUNK PROCESSING ───────────────────────────
